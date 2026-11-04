@@ -1,0 +1,52 @@
+name: build-exe
+
+# 在 GitHub 的 Windows 机器上自动打包 exe，并挂到 Release 上。
+# 触发方式：推送 v* 标签，或在 Actions 页面手动 Run workflow。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build exe
+        # build_exe.py 会自己 pip install pymupdf / pyinstaller，
+        # 打包后还会运行 dist\<name>.exe --check 做冒烟测试（返回码非 0 即失败）
+        run: python build_exe.py
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
+          if (-not $exe) { throw "dist 目录里没有 exe" }
+          Write-Host ("built: {0} ({1:N1} MB)" -f $exe.Name, ($exe.Length / 1MB))
+          Copy-Item $exe.FullName "pdfsize-tool-$($exe.Name)" -Force
+          Compress-Archive -Path "pdfsize-tool-$($exe.Name)" -DestinationPath pdfsize-tool-exe.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfsize-tool-exe
+          path: pdfsize-tool-exe.zip
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: pdfsize-tool-exe.zip
+          fail_on_unmatched_files: true
