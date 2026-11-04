@@ -1,0 +1,87 @@
+name: build-exe
+
+# 在 GitHub 的 Windows 机器上自动打包 exe，并挂到 Release 上。
+# 触发方式：推送 v* 标签，或在 Actions 页面手动 Run workflow。
+# 产出两个 exe：图形界面版（双击用）+ 命令行版（批处理/脚本用，有控制台输出）。
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # 英文 Windows runner 的控制台默认是 cp1252，脚本里的中文 print 会抛
+  # UnicodeEncodeError。脚本内部已经 reconfigure 了，这里再加一道保险。
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: "utf-8"
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build GUI exe
+        # build_exe.py 会自己 pip install pymupdf / pyinstaller，
+        # 打包后还会运行 dist\<name>.exe --check 做冒烟测试（返回码非 0 即失败）
+        run: python build_exe.py
+
+      - name: Build console exe (CLI)
+        # 图形版是 --windowed（没有控制台），命令行输出会被丢弃，所以再打一个控制台版
+        run: >
+          python -m PyInstaller --noconfirm --clean --onefile --console
+          --name "pdfsize-cli"
+          --hidden-import pdfsize_core
+          --collect-all pymupdf
+          --exclude-module onnxruntime
+          --exclude-module networkx
+          --exclude-module pymupdf4llm
+          --exclude-module pymupdf_layout
+          --exclude-module pymupdf_rag
+          --exclude-module scipy
+          --exclude-module pandas
+          --exclude-module matplotlib
+          --exclude-module pytest
+          --exclude-module IPython
+          --exclude-module jupyter
+          --exclude-module setuptools
+          --exclude-module pip
+          pdfsize_gui.py
+
+      - name: Smoke test CLI exe
+        shell: pwsh
+        run: |
+          $cli = Get-ChildItem dist -Filter *.exe | Where-Object { $_.Name -like '*cli*' } | Select-Object -First 1
+          if (-not $cli) { throw "没有找到命令行版 exe" }
+          & $cli.FullName --check
+          if ($LASTEXITCODE -ne 0) { throw "CLI exe 自检失败" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $exes = Get-ChildItem dist -Filter *.exe
+          foreach ($e in $exes) { Write-Host ("built: {0} ({1:N1} MB)" -f $e.Name, ($e.Length / 1MB)) }
+          Compress-Archive -Path (Join-Path dist '*.exe') -DestinationPath pdfsize-tool-exe.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdfsize-tool-exe
+          path: pdfsize-tool-exe.zip
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: pdfsize-tool-exe.zip
+          fail_on_unmatched_files: true
